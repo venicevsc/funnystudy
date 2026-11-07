@@ -56,6 +56,20 @@ test("a vote exactly at the limit is not rushed", () => {
   assert.equal(computePetState({ adoptedAt: T0 - HOUR, votes }, T0).isSick, false);
 });
 
+test("skimming at under a second a caption is rushed", () => {
+  const votes = [1, 2, 3, 4, 5].map((m) => vote(m, 900));
+  assert.equal(computePetState({ adoptedAt: T0 - HOUR, votes }, T0).isSick, true);
+});
+
+test("throwing up costs fullness, and recovering gives it back", () => {
+  const sick = computePetState({ adoptedAt: T0 - HOUR, votes: [1, 2, 3, 4, 5].map((m) => vote(m / 60, 200)) }, T0);
+  assert.equal(sick.isSick, true);
+  assert.equal(sick.fullness, 100 - PET_RULES.sickFullnessCost);
+
+  const calm = computePetState({ adoptedAt: T0 - HOUR, votes: [1, 2, 3, 4, 5].map((m) => vote(m / 60, 3000)) }, T0);
+  assert.equal(calm.fullness, 100);
+});
+
 test("sickness wears off after ten minutes", () => {
   const votes = [1, 2, 3, 4, 5].map((m) => vote(m, 200));
   const later = T0 + 11 * 60 * 1000;

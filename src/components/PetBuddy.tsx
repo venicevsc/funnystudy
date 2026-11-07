@@ -6,6 +6,8 @@ import {
   applyVote,
   computePetState,
   eventMessage,
+  isRushed,
+  PET_RULES,
   petMessage,
   type PetEvent,
   type PetInput,
@@ -35,8 +37,20 @@ const BODY_COLOR: Record<PetMood, string> = {
   gone: "#cbd5e1",
 };
 
-function Face({ mood }: { mood: PetMood }) {
+const QUEASY_COLOR = "#d4e157";
+
+function Face({ mood, queasy }: { mood: PetMood; queasy: boolean }) {
   const ink = "#1f1300";
+  if (queasy && mood !== "gone" && mood !== "sick") {
+    return (
+      <g stroke={ink} strokeWidth="2.5" strokeLinecap="round" fill="none">
+        {/* Spirals that grow outward from each eye's centre. */}
+        <path d="M38 46m0-1.5a1.5 1.5 0 1 1-1.5 1.5a3 3 0 1 1 3 3a4.5 4.5 0 1 1-4.5-4.5a6 6 0 1 1 6 6" />
+        <path d="M62 46m0-1.5a1.5 1.5 0 1 1-1.5 1.5a3 3 0 1 1 3 3a4.5 4.5 0 1 1-4.5-4.5a6 6 0 1 1 6 6" />
+        <path d="M40 67c3-3 6 3 10 0s7 3 10 0" />
+      </g>
+    );
+  }
   if (mood === "gone") {
     return (
       <g stroke={ink} strokeWidth="3" strokeLinecap="round">
@@ -78,12 +92,20 @@ export function PetCreature({
   size,
   throwingUp = false,
   celebrating = false,
+  queasy = false,
+  tossCount = 0,
 }: {
   mood: PetMood;
   size: number;
   throwingUp?: boolean;
   celebrating?: boolean;
+  /** Close to throwing up: swirly eyes and a green tinge. */
+  queasy?: boolean;
+  /** Goes up by one per rushed caption; each change flings the pet around once. */
+  tossCount?: number;
 }) {
+  const bodyColor = queasy && mood !== "sick" && mood !== "gone" ? QUEASY_COLOR : BODY_COLOR[mood];
+  const tossClass = tossCount === 0 ? "" : tossCount % 2 === 0 ? "pet-toss-left" : "pet-toss-right";
   const motion =
     mood === "sick"
       ? "pet-wobble"
@@ -103,15 +125,18 @@ export function PetCreature({
       style={{ opacity: mood === "gone" ? 0.45 : mood === "starving" ? 0.8 : 1 }}
     >
       <ellipse cx="50" cy="104" rx="26" ry="4" fill="currentColor" opacity="0.15" />
-      <path
-        d="M50 12c24 0 38 18 38 42 0 22-14 44-38 44S12 76 12 54C12 30 26 12 50 12z"
-        fill={BODY_COLOR[mood]}
-        stroke="#1f1300"
-        strokeWidth="3"
-      />
-      <path d="M30 20c-6-8-4-14 2-16 2 6 4 10 6 14M70 20c6-8 4-14-2-16-2 6-4 10-6 14" fill={BODY_COLOR[mood]} stroke="#1f1300" strokeWidth="3" strokeLinejoin="round" />
-      <Face mood={mood} />
-      {mood === "sick" ? <circle cx="76" cy="36" r="3" fill="#bef264" opacity="0.8" /> : null}
+      {/* Keyed on tossCount so every rushed caption restarts the fling. */}
+      <g key={tossCount} className={`pet-body ${tossClass}`}>
+        <path
+          d="M50 12c24 0 38 18 38 42 0 22-14 44-38 44S12 76 12 54C12 30 26 12 50 12z"
+          fill={bodyColor}
+          stroke="#1f1300"
+          strokeWidth="3"
+        />
+        <path d="M30 20c-6-8-4-14 2-16 2 6 4 10 6 14M70 20c6-8 4-14-2-16-2 6-4 10-6 14" fill={bodyColor} stroke="#1f1300" strokeWidth="3" strokeLinejoin="round" />
+        <Face mood={mood} queasy={queasy} />
+        {mood === "sick" || queasy ? <circle cx="76" cy="36" r="3" fill="#bef264" opacity="0.8" /> : null}
+      </g>
       {throwingUp ? (
         <g fill="#84cc16" stroke="#3f6212" strokeWidth="1.5">
           <ellipse className="pet-vomit pet-vomit-1" cx="50" cy="72" rx="5" ry="6" />
@@ -131,6 +156,7 @@ function useLivePet(initial: PetSnapshot) {
   const [toast, setToast] = useState<{ text: string; event: PetEvent } | null>(null);
   const [throwingUp, setThrowingUp] = useState(false);
   const [celebrating, setCelebrating] = useState(false);
+  const [tossCount, setTossCount] = useState(0);
 
   // A fresh page load hands us fresh data; start over from it.
   useEffect(() => {
@@ -151,14 +177,15 @@ function useLivePet(initial: PetSnapshot) {
       const result = applyVote(inputRef.current, vote, vote.at);
       inputRef.current = result.input;
       setState(result.state);
+      if (isRushed(vote.timeToVoteMs)) setTossCount((count) => count + 1);
 
       const text = eventMessage(initial.name, result.event);
       if (!text) return;
       setToast({ text, event: result.event });
-      timers.push(window.setTimeout(() => setToast(null), 4500));
+      timers.push(window.setTimeout(() => setToast(null), result.event === "threw-up" ? 6000 : 4500));
       if (result.event === "threw-up") {
         setThrowingUp(true);
-        timers.push(window.setTimeout(() => setThrowingUp(false), 2600));
+        timers.push(window.setTimeout(() => setThrowingUp(false), 3200));
       }
       if (result.event === "revived") {
         setCelebrating(true);
@@ -172,7 +199,8 @@ function useLivePet(initial: PetSnapshot) {
     };
   }, [initial.name]);
 
-  return { state, toast, throwingUp, celebrating };
+  const queasy = !state.isSick && !state.isGone && state.rushedVotes >= PET_RULES.queasyFastCount;
+  return { state, toast, throwingUp, celebrating, queasy, tossCount };
 }
 
 function FullnessBar({ value, mood }: { value: number; mood: PetMood }) {
@@ -199,14 +227,21 @@ export function PetCard({
   pet: PetSnapshot;
   renameAction: (formData: FormData) => void | Promise<void>;
 }) {
-  const { state, toast, throwingUp, celebrating } = useLivePet(pet);
+  const { state, toast, throwingUp, celebrating, queasy, tossCount } = useLivePet(pet);
   return (
     <section
       aria-label="Your pet"
       className="glass-panel mb-6 flex items-center gap-4 rounded-2xl p-4 sm:gap-6 sm:p-5"
     >
       <div className="shrink-0">
-        <PetCreature mood={state.mood} size={84} throwingUp={throwingUp} celebrating={celebrating} />
+        <PetCreature
+          mood={state.mood}
+          size={84}
+          throwingUp={throwingUp}
+          celebrating={celebrating}
+          queasy={queasy}
+          tossCount={tossCount}
+        />
       </div>
       <div className="min-w-0 flex-1 space-y-2">
         <div className="flex flex-wrap items-baseline gap-x-3">
@@ -239,11 +274,20 @@ export function PetCard({
 
 /** The small one in the corner of a study page: it reacts to every vote. */
 export function PetCorner({ pet }: { pet: PetSnapshot }) {
-  const { state, toast, throwingUp, celebrating } = useLivePet(pet);
+  const { state, toast, throwingUp, celebrating, queasy, tossCount } = useLivePet(pet);
   return (
     <div className="pointer-events-none fixed right-3 top-3 z-30 flex max-w-[16rem] flex-col items-end gap-1 sm:right-5 sm:top-4">
       <div className="flex items-center gap-2 rounded-2xl border border-[var(--card-border)] bg-[var(--pill-bg)] px-3 py-1.5 shadow-lg backdrop-blur-sm">
-        <PetCreature mood={state.mood} size={34} throwingUp={throwingUp} celebrating={celebrating} />
+        <div className={throwingUp ? "pet-pop" : undefined}>
+          <PetCreature
+            mood={state.mood}
+            size={34}
+            throwingUp={throwingUp}
+            celebrating={celebrating}
+            queasy={queasy}
+            tossCount={tossCount}
+          />
+        </div>
         <div className="w-16 space-y-1">
           <p className="truncate text-xs font-semibold text-[var(--foreground)]">{pet.name}</p>
           <FullnessBar value={state.fullness} mood={state.mood} />

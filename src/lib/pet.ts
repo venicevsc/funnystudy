@@ -6,13 +6,14 @@
 //     is recorded as a study_caption_navigation_events row, whether or not you
 //     hearted it). Go too long without one and the pet gets hungry, then fades
 //     away. It comes back with your next caption.
-//   * Don't feed it too fast. Five captions in a row, each gone in under half a
-//     second, and it throws up. Slow down and it recovers.
+//   * Don't feed it too fast. Five captions in a row, each gone in under a second,
+//     and it throws up, losing some fullness. Slow down and it recovers.
 //
-// The "too fast" numbers were checked against the real navigation events in the
-// course copy of the database (51,576 of them): this catches 109 of 397
-// participants at some point, on 5.4% of five-caption windows. The median time on
-// a caption there is over two seconds, so ordinary rating is nowhere near the line.
+// The line started at half a second, checked against the real navigation events in
+// the course copy of the database (51,576 of them): that caught 109 of 397
+// participants at some point, on 5.4% of five-caption windows. It was too hard to
+// hit on purpose by hand, so it is now one second. The median time on a caption
+// there is over two seconds, so ordinary rating still stays clear of it.
 //
 // In the types below a "vote" means one of these caption meals.
 
@@ -24,12 +25,16 @@ export const PET_RULES = {
   /** At this point the pet has faded away. Any vote brings it back. */
   goneAfterHours: 72,
   /** A vote faster than this was rushed. */
-  fastVoteMs: 500,
+  fastVoteMs: 1000,
   /** The pet is sick when this many of its last `windowSize` votes were rushed. */
   windowSize: 5,
   sickFastCount: 5,
   /** Sickness only shows for this long after the latest vote. */
   sickMemoryMs: 10 * 60 * 1000,
+  /** Fullness lost while the pet is sick; it comes back when the pet recovers. */
+  sickFullnessCost: 30,
+  /** From this many rushed votes the pet looks queasy, a warning before it throws up. */
+  queasyFastCount: 3,
 } as const;
 
 export type PetMood = "happy" | "peckish" | "hungry" | "starving" | "sick" | "gone";
@@ -84,7 +89,7 @@ export function computePetState(input: PetInput, now: string | number | Date = D
   // A pet is fed at adoption, even for someone who voted a lot before adopting it.
   const lastFedMs = Math.max(adoptedMs, recent[0]?.at ?? -Infinity);
   const hoursSinceFed = Math.max(0, (nowMs - lastFedMs) / HOUR_MS);
-  const fullness = Math.max(0, Math.round(100 * (1 - hoursSinceFed / PET_RULES.goneAfterHours)));
+  const fedFullness = Math.max(0, Math.round(100 * (1 - hoursSinceFed / PET_RULES.goneAfterHours)));
   const isGone = hoursSinceFed >= PET_RULES.goneAfterHours;
 
   const rushedVotes = recent.filter((vote) => isRushed(vote.timeToVoteMs)).length;
@@ -93,6 +98,7 @@ export function computePetState(input: PetInput, now: string | number | Date = D
     recent.length >= PET_RULES.windowSize &&
     rushedVotes >= PET_RULES.sickFastCount &&
     nowMs - recent[0].at <= PET_RULES.sickMemoryMs;
+  const fullness = isSick ? Math.max(0, fedFullness - PET_RULES.sickFullnessCost) : fedFullness;
 
   let mood: PetMood;
   if (isGone) mood = "gone";
