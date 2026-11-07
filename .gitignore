@@ -56,3 +56,6 @@ dist
 
 # OpenNext
 .open-next
+
+.vercel
+.env*
