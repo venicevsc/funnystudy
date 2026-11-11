@@ -45,7 +45,7 @@ export async function fetchPetSnapshot(
     .select("created_datetime_utc, time_to_next_caption_ms")
     .eq("profile_id", profileId)
     .order("created_datetime_utc", { ascending: false })
-    .limit(PET_RULES.windowSize);
+    .limit(PET_RULES.rushWindowSize);
 
   if (voteError) {
     console.error("[pet] load recent votes failed", voteError);

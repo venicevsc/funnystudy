@@ -6,8 +6,10 @@
 //     is recorded as a study_caption_navigation_events row, whether or not you
 //     hearted it). Go too long without one and the pet gets hungry, then fades
 //     away. It comes back with your next caption.
-//   * Don't feed it too fast. Five captions in a row, each gone in under a second,
-//     and it throws up, losing some fullness. Slow down and it recovers.
+//   * Don't feed it too fast. Every caption gone in under a second knocks a little
+//     off its fullness straight away, so the bar reacts to each skip, and each
+//     careful caption after that wins a share back straight away. Five rushed in a
+//     row and it throws up.
 //
 // The line started at half a second, checked against the real navigation events in
 // the course copy of the database (51,576 of them): that caught 109 of 397
@@ -31,8 +33,13 @@ export const PET_RULES = {
   sickFastCount: 5,
   /** Sickness only shows for this long after the latest vote. */
   sickMemoryMs: 10 * 60 * 1000,
-  /** Fullness lost while the pet is sick; it comes back when the pet recovers. */
-  sickFullnessCost: 30,
+  /**
+   * Fullness lost for each rushed vote and won back by each careful one, worked
+   * out over the latest `rushWindowSize` votes (5 rushed in a row = -40).
+   */
+  rushedFullnessCost: 8,
+  /** How many recent votes the rush cost is replayed over; the page loads this many. */
+  rushWindowSize: 10,
   /** From this many rushed votes the pet looks queasy, a warning before it throws up. */
   queasyFastCount: 3,
 } as const;
@@ -69,12 +76,15 @@ function toMs(value: string | number): number {
   return typeof value === "number" ? value : Date.parse(value);
 }
 
-function latestVotes(votes: readonly PetVote[]): { at: number; timeToVoteMs: number | null }[] {
+function latestVotes(
+  votes: readonly PetVote[],
+  count: number = PET_RULES.windowSize
+): { at: number; timeToVoteMs: number | null }[] {
   return votes
     .map((vote) => ({ at: toMs(vote.at), timeToVoteMs: vote.timeToVoteMs }))
     .filter((vote) => Number.isFinite(vote.at))
     .sort((a, b) => b.at - a.at)
-    .slice(0, PET_RULES.windowSize);
+    .slice(0, count);
 }
 
 export function isRushed(timeToVoteMs: number | null): boolean {
@@ -92,13 +102,23 @@ export function computePetState(input: PetInput, now: string | number | Date = D
   const fedFullness = Math.max(0, Math.round(100 * (1 - hoursSinceFed / PET_RULES.goneAfterHours)));
   const isGone = hoursSinceFed >= PET_RULES.goneAfterHours;
 
-  const rushedVotes = recent.filter((vote) => isRushed(vote.timeToVoteMs)).length;
+  // A rushed vote only counts for `sickMemoryMs` after it was cast, so rushing
+  // from days ago can't come back to life when the next careful vote arrives.
+  const rushedVotes = recent.filter(
+    (vote) => isRushed(vote.timeToVoteMs) && nowMs - vote.at <= PET_RULES.sickMemoryMs
+  ).length;
   const isSick =
-    !isGone &&
-    recent.length >= PET_RULES.windowSize &&
-    rushedVotes >= PET_RULES.sickFastCount &&
-    nowMs - recent[0].at <= PET_RULES.sickMemoryMs;
-  const fullness = isSick ? Math.max(0, fedFullness - PET_RULES.sickFullnessCost) : fedFullness;
+    !isGone && recent.length >= PET_RULES.windowSize && rushedVotes >= PET_RULES.sickFastCount;
+
+  // Replay the recent votes oldest first: rushing adds to a debt, a careful vote
+  // pays some back. Votes older than `sickMemoryMs` are forgotten.
+  let rushDebt = 0;
+  for (const vote of latestVotes(input.votes, PET_RULES.rushWindowSize).reverse()) {
+    if (nowMs - vote.at > PET_RULES.sickMemoryMs) continue;
+    rushDebt = Math.max(0, rushDebt + (isRushed(vote.timeToVoteMs) ? 1 : -1) * PET_RULES.rushedFullnessCost);
+  }
+  const rushCost = isGone ? 0 : rushDebt;
+  const fullness = Math.max(0, fedFullness - rushCost);
 
   let mood: PetMood;
   if (isGone) mood = "gone";
@@ -126,7 +146,7 @@ export function applyVote(
   const before = computePetState(input, nowMs);
   const next: PetInput = {
     adoptedAt: input.adoptedAt,
-    votes: [...latestVotes(input.votes), vote],
+    votes: [...latestVotes(input.votes, PET_RULES.rushWindowSize), vote],
   };
   const state = computePetState(next, nowMs);
 

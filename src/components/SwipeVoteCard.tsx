@@ -11,6 +11,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { warmCaptionImages } from "@/lib/image-preload";
 import { buildThumbnailVariants } from "@/lib/thumbnails";
 
 const DOUBLE_TAP_WINDOW_MS = 320;
@@ -82,7 +83,6 @@ export function SwipeVoteCard({
   reservedBottomPx?: number;
   reservedTopPx?: number;
 }) {
-  const preloadedImages = useRef<Set<string>>(new Set());
   const [viewportHeight, setViewportHeight] = useState<number>(720);
   const [containerWidth, setContainerWidth] = useState<number | null>(null);
   const [imageRatio, setImageRatio] = useState<number | null>(null);
@@ -187,58 +187,11 @@ export function SwipeVoteCard({
     };
   }, [displaySrc, handleImageError]);
 
+  // Start on the upcoming photos right away instead of waiting for this one to
+  // finish: they load at low priority, so the photo on screen still wins.
   useEffect(() => {
-    if (!preloadImageUrls?.length || !isContentVisible) return;
-
-    type PreloadTarget = {
-      key: string;
-      src: string;
-      srcSet?: string;
-      sizes?: string;
-    };
-
-    const preloadTargets = preloadImageUrls
-      .map((url): PreloadTarget | null => {
-        const variants = buildThumbnailVariants(url);
-        if (variants) {
-          return {
-            key: variants.original ?? variants.src ?? variants.grid ?? url,
-            src: variants.src ?? variants.grid ?? url,
-            srcSet: variants.srcSet,
-            sizes: variants.sizes,
-          };
-        }
-
-        if (!url) return null;
-        return { key: url, src: url };
-      })
-      .filter((target): target is PreloadTarget => Boolean(target));
-
-    preloadTargets.forEach(({ key, src, srcSet, sizes }) => {
-      if (!key || preloadedImages.current.has(key)) return;
-
-      preloadedImages.current.add(key);
-      const img = new window.Image();
-
-      if (srcSet) {
-        img.onerror = () => {
-          img.onerror = null;
-          img.removeAttribute("srcset");
-          img.removeAttribute("sizes");
-          img.src = key;
-        };
-      }
-
-      if (srcSet) {
-        img.srcset = srcSet;
-      }
-      if (sizes) {
-        img.sizes = sizes;
-      }
-
-      img.src = src;
-    });
-  }, [isContentVisible, preloadImageUrls]);
+    if (preloadImageUrls?.length) warmCaptionImages(preloadImageUrls);
+  }, [preloadImageUrls]);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -451,7 +404,7 @@ export function SwipeVoteCard({
                   alt="Caption related"
                   fetchPriority="high"
                   loading="eager"
-                  className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-300 ${
+                  className={`absolute inset-0 h-full w-full object-contain transition-opacity duration-150 ${
                     isContentVisible ? "opacity-100" : "opacity-0"
                   }`}
                   onLoad={(event) => {

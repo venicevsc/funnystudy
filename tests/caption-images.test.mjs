@@ -27,7 +27,11 @@ function loadModule(path, imports = {}) {
 }
 
 const thumbnails = loadModule("src/lib/thumbnails.ts");
+const imagePreload = loadModule("src/lib/image-preload.ts", {
+  "@/lib/thumbnails": thumbnails,
+});
 const { SwipeVoteCard } = loadModule("src/components/SwipeVoteCard.tsx", {
+  "@/lib/image-preload": imagePreload,
   "@/lib/thumbnails": thumbnails,
 });
 

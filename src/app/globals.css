@@ -880,6 +880,14 @@ button[aria-busy="true"] {
   85% { transform: scale(2.1); }
   100% { transform: scale(1); }
 }
+/* The "+8 / −8 / yum!" next to the fullness bar after each caption. */
+@keyframes petDelta {
+  0% { transform: translateY(4px) scale(0.7); opacity: 0; }
+  15% { transform: translateY(0) scale(1.15); opacity: 1; }
+  70% { transform: translateY(-2px) scale(1); opacity: 1; }
+  100% { transform: translateY(-8px); opacity: 0; }
+}
+.pet-delta { animation: petDelta 1.3s ease-out forwards; }
 .pet-body { transform-box: fill-box; transform-origin: center; }
 .pet-toss-left { animation: petTossLeft 0.65s cubic-bezier(0.3, 0.7, 0.4, 1); }
 .pet-toss-right { animation: petTossRight 0.65s cubic-bezier(0.3, 0.7, 0.4, 1); }
@@ -894,5 +902,6 @@ button[aria-busy="true"] {
 @media (prefers-reduced-motion: reduce) {
   .pet-bounce, .pet-wobble, .pet-float, .pet-vomit,
   .pet-toss-left, .pet-toss-right, .pet-pop { animation: none; }
+  .pet-delta { animation: none; opacity: 1; }
   .pet-vomit { opacity: 1; }
 }

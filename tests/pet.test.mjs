@@ -64,10 +64,34 @@ test("skimming at under a second a caption is rushed", () => {
 test("throwing up costs fullness, and recovering gives it back", () => {
   const sick = computePetState({ adoptedAt: T0 - HOUR, votes: [1, 2, 3, 4, 5].map((m) => vote(m / 60, 200)) }, T0);
   assert.equal(sick.isSick, true);
-  assert.equal(sick.fullness, 100 - PET_RULES.sickFullnessCost);
+  assert.equal(sick.fullness, 100 - 5 * PET_RULES.rushedFullnessCost);
 
   const calm = computePetState({ adoptedAt: T0 - HOUR, votes: [1, 2, 3, 4, 5].map((m) => vote(m / 60, 3000)) }, T0);
   assert.equal(calm.fullness, 100);
+});
+
+test("each rushed caption lowers fullness right away, and a careful one wins it back", () => {
+  const input = { adoptedAt: T0 - HOUR, votes: [1, 2, 3, 4, 5].map((m) => vote(m / 60, 3000)) };
+  const rushed = applyVote(input, { at: T0, timeToVoteMs: 200 }, T0);
+  assert.equal(rushed.state.fullness, 100 - PET_RULES.rushedFullnessCost);
+  assert.equal(rushed.state.isSick, false);
+
+  const twice = applyVote(rushed.input, { at: T0 + 500, timeToVoteMs: 200 }, T0 + 500);
+  assert.equal(twice.state.fullness, 100 - 2 * PET_RULES.rushedFullnessCost);
+
+  const careful = applyVote(twice.input, { at: T0 + 4000, timeToVoteMs: 3000 }, T0 + 4000);
+  assert.equal(careful.state.fullness, 100 - PET_RULES.rushedFullnessCost);
+  const again = applyVote(careful.input, { at: T0 + 7000, timeToVoteMs: 3000 }, T0 + 7000);
+  assert.equal(again.state.fullness, 100);
+});
+
+test("old rushed captions don't come back when a new careful one arrives", () => {
+  const stale = [2, 3, 4, 5].map((m) => vote(24 * 60 + m, 200)); // a day ago
+  const input = { adoptedAt: T0 - 48 * HOUR, votes: stale };
+  const r = applyVote(input, { at: T0, timeToVoteMs: 3000 }, T0);
+  assert.equal(r.state.rushedVotes, 0);
+  assert.equal(r.state.fullness, 100);
+  assert.equal(r.state.isSick, false);
 });
 
 test("sickness wears off after ten minutes", () => {

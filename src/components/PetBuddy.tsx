@@ -157,6 +157,8 @@ function useLivePet(initial: PetSnapshot) {
   const [throwingUp, setThrowingUp] = useState(false);
   const [celebrating, setCelebrating] = useState(false);
   const [tossCount, setTossCount] = useState(0);
+  const [pop, setPop] = useState<FullnessPop | null>(null);
+  const popIdRef = useRef(0);
 
   // A fresh page load hands us fresh data; start over from it.
   useEffect(() => {
@@ -174,10 +176,24 @@ function useLivePet(initial: PetSnapshot) {
     const timers: number[] = [];
     const onVote = (event: Event) => {
       const vote = (event as CustomEvent<PetVote>).detail;
+      const before = computePetState(inputRef.current, vote.at);
       const result = applyVote(inputRef.current, vote, vote.at);
       inputRef.current = result.input;
       setState(result.state);
-      if (isRushed(vote.timeToVoteMs)) setTossCount((count) => count + 1);
+      const rushed = isRushed(vote.timeToVoteMs);
+      if (rushed) setTossCount((count) => count + 1);
+
+      // Every caption gets a visible reaction, even when the bar is already full.
+      const delta = result.state.fullness - before.fullness;
+      // Only this caption's timer may clear this caption's pop; with quick
+      // skipping an older timer would otherwise wipe the newest reaction.
+      const popId = ++popIdRef.current;
+      setPop({
+        id: popId,
+        text: delta > 0 ? `+${delta}` : delta < 0 ? `−${-delta}` : rushed ? "oof" : "yum!",
+        tone: delta > 0 ? "up" : delta < 0 || rushed ? "down" : "fed",
+      });
+      timers.push(window.setTimeout(() => setPop((current) => (current?.id === popId ? null : current)), 1300));
 
       const text = eventMessage(initial.name, result.event);
       if (!text) return;
@@ -200,7 +216,32 @@ function useLivePet(initial: PetSnapshot) {
   }, [initial.name]);
 
   const queasy = !state.isSick && !state.isGone && state.rushedVotes >= PET_RULES.queasyFastCount;
-  return { state, toast, throwingUp, celebrating, queasy, tossCount };
+  return { state, toast, throwingUp, celebrating, queasy, tossCount, pop };
+}
+
+type FullnessPop = { id: number; text: string; tone: "up" | "down" | "fed" };
+
+const POP_TONE: Record<FullnessPop["tone"], string> = {
+  up: "text-emerald-400",
+  down: "text-rose-400",
+  fed: "text-amber-300",
+};
+
+/** Fullness as a number plus the latest caption's +/- reaction, side by side. */
+function FullnessReadout({ value, pop }: { value: number; pop: FullnessPop | null }) {
+  return (
+    <span className="flex shrink-0 items-baseline gap-1 text-xs tabular-nums">
+      <span className="text-[var(--muted)]">{value}%</span>
+      {/* Keyed on id so the same text ("yum!" twice in a row) still replays. */}
+      <span aria-hidden className="inline-block w-8 text-left">
+        {pop ? (
+          <span key={pop.id} className={`pet-delta inline-block font-bold ${POP_TONE[pop.tone]}`}>
+            {pop.text}
+          </span>
+        ) : null}
+      </span>
+    </span>
+  );
 }
 
 function FullnessBar({ value, mood }: { value: number; mood: PetMood }) {
@@ -214,7 +255,7 @@ function FullnessBar({ value, mood }: { value: number; mood: PetMood }) {
       aria-valuenow={value}
       className="h-2 w-full overflow-hidden rounded-full bg-[var(--surface-muted)] ring-1 ring-[var(--card-border)]"
     >
-      <div className="h-full rounded-full transition-all duration-700" style={{ width: `${value}%`, background: color }} />
+      <div className="h-full rounded-full transition-all duration-300 ease-out" style={{ width: `${value}%`, background: color }} />
     </div>
   );
 }
@@ -227,7 +268,7 @@ export function PetCard({
   pet: PetSnapshot;
   renameAction: (formData: FormData) => void | Promise<void>;
 }) {
-  const { state, toast, throwingUp, celebrating, queasy, tossCount } = useLivePet(pet);
+  const { state, toast, throwingUp, celebrating, queasy, tossCount, pop } = useLivePet(pet);
   return (
     <section
       aria-label="Your pet"
@@ -263,7 +304,10 @@ export function PetCard({
             </form>
           </details>
         </div>
-        <FullnessBar value={state.fullness} mood={state.mood} />
+        <div className="flex items-center gap-2">
+          <FullnessBar value={state.fullness} mood={state.mood} />
+          <FullnessReadout value={state.fullness} pop={pop} />
+        </div>
         <p className="text-sm text-[var(--muted)]" aria-live="polite">
           {toast?.text ?? petMessage(pet.name, state)}
         </p>
@@ -274,7 +318,7 @@ export function PetCard({
 
 /** The small one in the corner of a study page: it reacts to every vote. */
 export function PetCorner({ pet }: { pet: PetSnapshot }) {
-  const { state, toast, throwingUp, celebrating, queasy, tossCount } = useLivePet(pet);
+  const { state, toast, throwingUp, celebrating, queasy, tossCount, pop } = useLivePet(pet);
   return (
     <div className="pointer-events-none fixed right-3 top-3 z-30 flex max-w-[16rem] flex-col items-end gap-1 sm:right-5 sm:top-4">
       <div className="flex items-center gap-2 rounded-2xl border border-[var(--card-border)] bg-[var(--pill-bg)] px-3 py-1.5 shadow-lg backdrop-blur-sm">
@@ -288,8 +332,11 @@ export function PetCorner({ pet }: { pet: PetSnapshot }) {
             tossCount={tossCount}
           />
         </div>
-        <div className="w-16 space-y-1">
-          <p className="truncate text-xs font-semibold text-[var(--foreground)]">{pet.name}</p>
+        <div className="w-36 space-y-1">
+          <div className="flex items-baseline justify-between gap-1">
+            <p className="min-w-0 truncate text-xs font-semibold text-[var(--foreground)]">{pet.name}</p>
+            <FullnessReadout value={state.fullness} pop={pop} />
+          </div>
           <FullnessBar value={state.fullness} mood={state.mood} />
         </div>
       </div>

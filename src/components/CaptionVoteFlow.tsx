@@ -6,6 +6,7 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
   type CSSProperties,
@@ -16,6 +17,7 @@ import type { StudyParticipation } from "@/lib/study-participation";
 import type { StudyStats } from "@/lib/study-stats";
 import { CompletedStudy } from "@/components/CompletedStudy";
 import { announcePetVote } from "@/components/PetBuddy";
+import { warmCaptionImages } from "@/lib/image-preload";
 import { STUDY_CAPTION_BATCH_SIZE } from "@/lib/study-caption-order";
 
 import {
@@ -49,6 +51,7 @@ const TOUCH_NAVIGATION_THRESHOLD_PX = 52;
 const WHEEL_NAVIGATION_THRESHOLD_PX = 32;
 const WHEEL_GESTURE_IDLE_MS = 110;
 const HEART_BURST_CLEAR_MS = 980;
+const PRELOAD_AHEAD_COUNT = 15;
 const HEART_BURST_PARTICLES = [
   {
     x: -76,
@@ -592,10 +595,25 @@ export function CaptionVoteFlow({
       : 0;
   const contentBottomPaddingPx =
     reservedBottomPx + BASE_SCREEN_BOTTOM_PADDING_PX + standaloneProgressPaddingPx;
-  const preloadImageUrls = queue
-    .slice(currentIndex + 1, currentIndex + 6)
-    .map((caption) => caption.imageSrc)
-    .filter((url): url is string => Boolean(url));
+  // Photos to have downloaded and decoded before they're needed. Fifteen ahead
+  // stays in front of someone skipping quickly; while the start page is up,
+  // the current photo is included so it's ready the moment they begin.
+  const preloadImageUrls = useMemo(
+    () =>
+      queue
+        .slice(
+          isStartPageVisible ? currentIndex : currentIndex + 1,
+          currentIndex + 1 + PRELOAD_AHEAD_COUNT
+        )
+        .map((caption) => caption.imageSrc)
+        .filter((url): url is string => Boolean(url)),
+    [currentIndex, isStartPageVisible, queue]
+  );
+
+  // The card isn't on screen behind the start page, so warm the first batch here.
+  useEffect(() => {
+    if (isStartPageVisible) warmCaptionImages(preloadImageUrls);
+  }, [isStartPageVisible, preloadImageUrls]);
 
   const getVoteSessionId = useCallback(() => {
     if (voteSessionIdRef.current) {
