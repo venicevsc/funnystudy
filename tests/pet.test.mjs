@@ -150,3 +150,37 @@ test("event messages exist for each event and stay quiet for none", () => {
   assert.match(eventMessage("Pip", "revived"), /back/);
   assert.equal(eventMessage("Pip", "none"), null);
 });
+
+test("a liked or disliked caption is never rushed, even when it was quick", () => {
+  const votes = [1, 2, 3, 4, 5].map((m) => ({ ...vote(m, 200), rated: true }));
+  const s = computePetState({ adoptedAt: T0 - HOUR, votes }, T0);
+  assert.equal(s.rushedVotes, 0);
+  assert.equal(s.isSick, false);
+  assert.equal(s.fullness, 100);
+});
+
+test("only the skipped captions count when likes and skips are mixed", () => {
+  const votes = [
+    { ...vote(1, 200), rated: true },
+    vote(2, 200),
+    { ...vote(3, 200), rated: true },
+    vote(4, 200),
+    vote(5, 200),
+  ];
+  const s = computePetState({ adoptedAt: T0 - HOUR, votes }, T0);
+  assert.equal(s.rushedVotes, 3);
+  assert.equal(s.isSick, false);
+});
+
+test("rating each caption saves a pet that skipping would have made sick", () => {
+  let input = fresh;
+  let t = T0;
+  const events = [];
+  for (let i = 0; i < 6; i++) {
+    t += 300;
+    const r = applyVote(input, { at: t, timeToVoteMs: 200, rated: i % 2 === 0 }, t);
+    input = r.input;
+    events.push(r.event);
+  }
+  assert.ok(!events.includes("threw-up"));
+});

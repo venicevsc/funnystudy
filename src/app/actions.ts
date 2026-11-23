@@ -46,6 +46,7 @@ export type LoadMoreCaptionsResult =
         content: string | null;
         id: string;
         imageSrc: string | null;
+        isDisliked: boolean;
         isLiked: boolean;
         isSaved: boolean;
         studyCaptionMappingId: number | null;
@@ -114,6 +115,7 @@ export async function loadMoreCaptionVoteCaptions({
       content: caption.content,
       id: caption.id,
       imageSrc: resolveStudyCaptionImageUrl(caption),
+      isDisliked: caption.is_disliked,
       isLiked: caption.is_liked,
       isSaved: caption.is_saved,
       studyCaptionMappingId: caption.study_caption_mapping_id,

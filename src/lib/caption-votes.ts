@@ -1,10 +1,12 @@
 import type { Enums } from "@/types/supabase";
 
 export const HEART_VOTE_VALUE = "funny" as const satisfies Enums<"study_vote_value">;
+/** A dislike is stored as the study's existing "not funny at all" answer (legacy -1). */
+export const DISLIKE_VOTE_VALUE = "not funny at all" as const satisfies Enums<"study_vote_value">;
 export const VOTE_INPUT_METHODS = ["button", "swipe", "keyboard"] as const satisfies readonly Enums<"study_vote_input_method">[];
 export const STUDY_VOTE_VALUES = [
   "didnt get it",
-  "not funny at all",
+  DISLIKE_VOTE_VALUE,
   "not very funny",
   "meh",
   HEART_VOTE_VALUE,

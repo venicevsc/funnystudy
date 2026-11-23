@@ -50,6 +50,7 @@ export type StudyRow = {
 
 export type ViewerActiveStudyCaption = ActiveStudyCaption & {
   is_liked: boolean;
+  is_disliked: boolean;
   is_saved: boolean;
 };
 
@@ -172,27 +173,30 @@ async function fetchLikedCaptionIdsForProfile(
   supabase: SupabaseClient,
   profileId: string,
   captionIds: readonly string[]
-): Promise<{ likedCaptionIds: Set<string>; error: PostgrestError | null }> {
+): Promise<{
+  likedCaptionIds: Set<string>;
+  dislikedCaptionIds: Set<string>;
+  error: PostgrestError | null;
+}> {
   if (!captionIds.length) {
-    return { likedCaptionIds: new Set<string>(), error: null };
+    return { likedCaptionIds: new Set<string>(), dislikedCaptionIds: new Set<string>(), error: null };
   }
 
   const { data, error } = await supabase
     .from("caption_votes")
-    .select("caption_id")
+    .select("caption_id, vote_value")
     .eq("profile_id", profileId)
     .eq("is_from_study", true)
-    .gt("vote_value", 0)
     .in("caption_id", captionIds);
 
   if (error) {
-    return { likedCaptionIds: new Set<string>(), error };
+    return { likedCaptionIds: new Set<string>(), dislikedCaptionIds: new Set<string>(), error };
   }
 
+  const rows = (data ?? []) as Array<CaptionIdRow & { vote_value: number }>;
   return {
-    likedCaptionIds: new Set(
-      ((data ?? []) as CaptionIdRow[]).map((row) => row.caption_id)
-    ),
+    likedCaptionIds: new Set(rows.filter((row) => row.vote_value > 0).map((row) => row.caption_id)),
+    dislikedCaptionIds: new Set(rows.filter((row) => row.vote_value < 0).map((row) => row.caption_id)),
     error: null,
   };
 }
@@ -431,7 +435,7 @@ export async function fetchActiveStudyCaptionPage(
   }
 
   const [
-    { likedCaptionIds, error: likedCaptionIdsError },
+    { likedCaptionIds, dislikedCaptionIds, error: likedCaptionIdsError },
     { savedCaptionIds, error: savedCaptionIdsError },
   ] = await Promise.all([
     fetchLikedCaptionIdsForProfile(supabase, profileId, candidateCaptionIds),
@@ -450,6 +454,7 @@ export async function fetchActiveStudyCaptionPage(
     captions: candidateCaptions.map((caption) => ({
       ...caption,
       is_liked: likedCaptionIds.has(caption.id),
+      is_disliked: dislikedCaptionIds.has(caption.id),
       is_saved: savedCaptionIds.has(caption.id),
     })),
     error: null,

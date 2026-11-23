@@ -3070,18 +3070,21 @@ export type Database = {
       }
       pets: {
         Row: {
+          accessory: string | null
           adopted_at: string
           modified_at: string
           name: string
           profile_id: string
         }
         Insert: {
+          accessory?: string | null
           adopted_at?: string
           modified_at?: string
           name: string
           profile_id: string
         }
         Update: {
+          accessory?: string | null
           adopted_at?: string
           modified_at?: string
           name?: string

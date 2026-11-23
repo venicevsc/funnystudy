@@ -11,7 +11,7 @@ import { ThemeMenu } from "@/components/theme/ThemeMenu";
 import { buildDemographicsPath, hasPendingDemographicQuestions } from "@/lib/demographics";
 import { DEMOGRAPHIC_SKIPS_COOKIE, readDemographicSkips } from "@/lib/demographic-skips";
 import { buildNotificationPreferencesPath, fetchNotificationPreferences, NOTIFICATION_SKIPS_COOKIE, readNotificationSkips } from "@/lib/notification-preferences";
-import { adoptPet, renamePet } from "@/app/pet-actions";
+import { adoptPet, renamePet, setPetAccessory } from "@/app/pet-actions";
 import { fetchPetSnapshot } from "@/lib/pet-data";
 import { fetchPublicActiveStudyIdentities } from "@/lib/studies";
 import { createClient } from "@/lib/supabase/server";
@@ -120,7 +120,7 @@ export default async function Home({
           </p>
         ) : null}
         {pet ? (
-          <PetCard pet={pet} renameAction={renamePet} />
+          <PetCard pet={pet} renameAction={renamePet} accessoryAction={setPetAccessory} />
         ) : petError ? null : (
           <AdoptPetCard adoptAction={adoptPet} />
         )}

@@ -6,10 +6,11 @@
 //     is recorded as a study_caption_navigation_events row, whether or not you
 //     hearted it). Go too long without one and the pet gets hungry, then fades
 //     away. It comes back with your next caption.
-//   * Don't feed it too fast. Every caption gone in under a second knocks a little
-//     off its fullness straight away, so the bar reacts to each skip, and each
-//     careful caption after that wins a share back straight away. Five rushed in a
-//     row and it throws up.
+//   * Don't skip too fast. Every caption skipped in under a second without a like or
+//     dislike knocks a little off its fullness straight away, so the bar reacts to
+//     each skip, and each careful caption after that wins a share back. Five
+//     skipped in a row and it throws up. Liking or disliking a caption is an
+//     answer, not a skip, so it never costs HP however quickly you tap.
 //
 // The line started at half a second, checked against the real navigation events in
 // the course copy of the database (51,576 of them): that caught 109 of 397
@@ -18,6 +19,9 @@
 // there is over two seconds, so ordinary rating still stays clear of it.
 //
 // In the types below a "vote" means one of these caption meals.
+
+/** Fullness is shown to the player as HP out of this many. */
+export const PET_MAX_HP = 100;
 
 export const PET_RULES = {
   /** Hours without a vote before each stage. */
@@ -51,6 +55,12 @@ export type PetVote = {
   at: string | number;
   /** How long the participant looked before voting. null when unknown. */
   timeToVoteMs: number | null;
+  /**
+   * The participant liked or disliked this caption before moving on. That is a real
+   * answer, so it is never rushed however quickly they gave it. Only skipping
+   * through without reacting can make the pet sick.
+   */
+  rated?: boolean;
 };
 
 export type PetInput = {
@@ -79,9 +89,9 @@ function toMs(value: string | number): number {
 function latestVotes(
   votes: readonly PetVote[],
   count: number = PET_RULES.windowSize
-): { at: number; timeToVoteMs: number | null }[] {
+): { at: number; timeToVoteMs: number | null; rated: boolean }[] {
   return votes
-    .map((vote) => ({ at: toMs(vote.at), timeToVoteMs: vote.timeToVoteMs }))
+    .map((vote) => ({ at: toMs(vote.at), timeToVoteMs: vote.timeToVoteMs, rated: vote.rated === true }))
     .filter((vote) => Number.isFinite(vote.at))
     .sort((a, b) => b.at - a.at)
     .slice(0, count);
@@ -89,6 +99,11 @@ function latestVotes(
 
 export function isRushed(timeToVoteMs: number | null): boolean {
   return timeToVoteMs !== null && Number.isFinite(timeToVoteMs) && timeToVoteMs < PET_RULES.fastVoteMs;
+}
+
+/** A caption is rushed when it was skipped past quickly without a like or dislike. */
+export function isRushedVote(vote: { timeToVoteMs: number | null; rated?: boolean }): boolean {
+  return vote.rated !== true && isRushed(vote.timeToVoteMs);
 }
 
 export function computePetState(input: PetInput, now: string | number | Date = Date.now()): PetState {
@@ -99,13 +114,13 @@ export function computePetState(input: PetInput, now: string | number | Date = D
   // A pet is fed at adoption, even for someone who voted a lot before adopting it.
   const lastFedMs = Math.max(adoptedMs, recent[0]?.at ?? -Infinity);
   const hoursSinceFed = Math.max(0, (nowMs - lastFedMs) / HOUR_MS);
-  const fedFullness = Math.max(0, Math.round(100 * (1 - hoursSinceFed / PET_RULES.goneAfterHours)));
+  const fedFullness = Math.max(0, Math.round(PET_MAX_HP * (1 - hoursSinceFed / PET_RULES.goneAfterHours)));
   const isGone = hoursSinceFed >= PET_RULES.goneAfterHours;
 
   // A rushed vote only counts for `sickMemoryMs` after it was cast, so rushing
   // from days ago can't come back to life when the next careful vote arrives.
   const rushedVotes = recent.filter(
-    (vote) => isRushed(vote.timeToVoteMs) && nowMs - vote.at <= PET_RULES.sickMemoryMs
+    (vote) => isRushedVote(vote) && nowMs - vote.at <= PET_RULES.sickMemoryMs
   ).length;
   const isSick =
     !isGone && recent.length >= PET_RULES.windowSize && rushedVotes >= PET_RULES.sickFastCount;
@@ -115,7 +130,7 @@ export function computePetState(input: PetInput, now: string | number | Date = D
   let rushDebt = 0;
   for (const vote of latestVotes(input.votes, PET_RULES.rushWindowSize).reverse()) {
     if (nowMs - vote.at > PET_RULES.sickMemoryMs) continue;
-    rushDebt = Math.max(0, rushDebt + (isRushed(vote.timeToVoteMs) ? 1 : -1) * PET_RULES.rushedFullnessCost);
+    rushDebt = Math.max(0, rushDebt + (isRushedVote(vote) ? 1 : -1) * PET_RULES.rushedFullnessCost);
   }
   const rushCost = isGone ? 0 : rushDebt;
   const fullness = Math.max(0, fedFullness - rushCost);

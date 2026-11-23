@@ -1,11 +1,10 @@
 "use client";
 
-import { HeartIcon as HeartOutlineIcon } from "@heroicons/react/24/outline";
-import { HeartIcon as HeartSolidIcon } from "@heroicons/react/24/solid";
+import { HandThumbDownIcon as ThumbDownOutlineIcon, HeartIcon as HeartOutlineIcon } from "@heroicons/react/24/outline";
+import { HandThumbDownIcon as ThumbDownSolidIcon, HeartIcon as HeartSolidIcon } from "@heroicons/react/24/solid";
 import {
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -16,7 +15,7 @@ import { endStudy, startStudy } from "@/app/study/actions";
 import type { StudyParticipation } from "@/lib/study-participation";
 import type { StudyStats } from "@/lib/study-stats";
 import { CompletedStudy } from "@/components/CompletedStudy";
-import { announcePetVote } from "@/components/PetBuddy";
+import { announcePetReaction, announcePetVote } from "@/components/PetBuddy";
 import { warmCaptionImages } from "@/lib/image-preload";
 import { STUDY_CAPTION_BATCH_SIZE } from "@/lib/study-caption-order";
 
@@ -27,6 +26,7 @@ import {
   saveCaptionVote,
 } from "@/app/actions";
 import {
+  DISLIKE_VOTE_VALUE,
   HEART_VOTE_VALUE,
   type VoteInputMethod,
 } from "@/lib/caption-votes";
@@ -35,6 +35,7 @@ import { SwipeVoteCard } from "./SwipeVoteCard";
 
 export type CaptionForVote = {
   id: string;
+  isDisliked?: boolean;
   isLiked: boolean;
   isSaved: boolean;
   content: string | null;
@@ -186,7 +187,9 @@ type TouchGestureState = {
 };
 
 type VoteStatus = "removing" | "saving" | "saved";
+type VoteKind = "like" | "dislike";
 type HeartBurstState = {
+  kind: VoteKind;
   token: number;
   voteKey: string | null;
 };
@@ -315,7 +318,7 @@ function getCaptionVoteKey(caption: CaptionForVote | undefined) {
 
 function createPersistedVoteStatusLookup(captions: readonly CaptionForVote[]) {
   return captions.reduce<Record<string, VoteStatus>>((lookup, caption) => {
-    if (!caption.isLiked) {
+    if (!caption.isLiked && !caption.isDisliked) {
       return lookup;
     }
 
@@ -323,6 +326,20 @@ function createPersistedVoteStatusLookup(captions: readonly CaptionForVote[]) {
 
     if (voteKey) {
       lookup[voteKey] = "saved";
+    }
+
+    return lookup;
+  }, {});
+}
+
+function createPersistedVoteKindLookup(captions: readonly CaptionForVote[]) {
+  return captions.reduce<Record<string, VoteKind>>((lookup, caption) => {
+    const voteKey = getCaptionVoteKey(caption);
+
+    if (voteKey && caption.isDisliked) {
+      lookup[voteKey] = "dislike";
+    } else if (voteKey && caption.isLiked) {
+      lookup[voteKey] = "like";
     }
 
     return lookup;
@@ -419,6 +436,7 @@ export function CaptionVoteFlow({
   const [isWheelNavigationOverlayVisible, setIsWheelNavigationOverlayVisible] =
     useState(false);
   const [heartBurst, setHeartBurst] = useState<HeartBurstState>({
+    kind: "like",
     token: 0,
     voteKey: null,
   });
@@ -427,6 +445,9 @@ export function CaptionVoteFlow({
     useState<SessionStudyStatsState>(() => createEmptySessionStudyStats());
   const [voteStatuses, setVoteStatuses] = useState<Record<string, VoteStatus>>(
     () => createPersistedVoteStatusLookup(captions)
+  );
+  const [voteKinds, setVoteKinds] = useState<Record<string, VoteKind>>(() =>
+    createPersistedVoteKindLookup(captions)
   );
   const activeVoteTimeMs = useRef(0);
   const activeVoteStartedAtMs = useRef<number | null>(
@@ -562,10 +583,17 @@ export function CaptionVoteFlow({
   const currentVoteStatus = currentVoteKey ? voteStatuses[currentVoteKey] : null;
   const isCurrentVoteSaving = currentVoteStatus === "saving";
   const isCurrentVoteRemoving = currentVoteStatus === "removing";
-  const hasCurrentSavedVote =
+  const hasCurrentVote =
     currentVoteStatus === "saved" ||
     currentVoteStatus === "saving" ||
     currentVoteStatus === "removing";
+  const currentVoteKind: VoteKind = (currentVoteKey && voteKinds[currentVoteKey]) || "like";
+  const hasCurrentLike = hasCurrentVote && currentVoteKind === "like";
+  const hasCurrentDislike = hasCurrentVote && currentVoteKind === "dislike";
+  const likeBurstToken =
+    heartBurst.voteKey === currentVoteKey && heartBurst.kind === "like" ? heartBurst.token : 0;
+  const dislikeBurstToken =
+    heartBurst.voteKey === currentVoteKey && heartBurst.kind === "dislike" ? heartBurst.token : 0;
   const isShowingCompletionPage =
     !isStartPageVisible && (queue.length === 0 || isCompletionPageVisible);
   const shouldShowInlineCaptionActions = Boolean(current?.imageSrc);
@@ -795,12 +823,40 @@ export function CaptionVoteFlow({
     []
   );
 
-  const triggerHeartBurst = useCallback((voteKey: string | null) => {
+  const setVoteKind = useCallback((voteKey: string, kind: VoteKind | null) => {
+    setVoteKinds((previous) => {
+      if (kind === null) {
+        const next = { ...previous };
+        delete next[voteKey];
+        return next;
+      }
+
+      return { ...previous, [voteKey]: kind };
+    });
+  }, []);
+
+  /** A caption that is no longer liked stops counting towards the liked stats. */
+  const forgetLikedTime = useCallback((voteKey: string) => {
+    setSessionStudyStats((previousStats) => {
+      const nextLikedCaptionTimeMsByKey = { ...previousStats.likedCaptionTimeMsByKey };
+
+      delete nextLikedCaptionTimeMsByKey[voteKey];
+
+      return {
+        likedCaptionTimeMsByKey: nextLikedCaptionTimeMsByKey,
+        navigationTimeMsByKey: previousStats.navigationTimeMsByKey,
+        viewedCaptionKeys: previousStats.viewedCaptionKeys,
+      };
+    });
+  }, []);
+
+  const triggerReactionBurst = useCallback((voteKey: string | null, kind: VoteKind) => {
     if (!voteKey) {
       return;
     }
 
     setHeartBurst((previousBurst) => ({
+      kind,
       token: previousBurst.token + 1,
       voteKey,
     }));
@@ -857,7 +913,7 @@ export function CaptionVoteFlow({
         const nextVoteStatuses = { ...previousVoteStatuses };
 
         appendedCaptions.forEach((caption) => {
-          if (!caption.isLiked) {
+          if (!caption.isLiked && !caption.isDisliked) {
             return;
           }
 
@@ -870,6 +926,10 @@ export function CaptionVoteFlow({
 
         return nextVoteStatuses;
       });
+      setVoteKinds((previousKinds) => ({
+        ...previousKinds,
+        ...createPersistedVoteKindLookup(appendedCaptions),
+      }));
     }
   }, []);
 
@@ -961,7 +1021,11 @@ export function CaptionVoteFlow({
       }
 
       // Every caption you move past feeds the study pet (see src/lib/pet.ts).
-      announcePetVote({ timeToVoteMs: eventDetails.timeToNextCaptionMs });
+      const navigationVoteStatus = navigationVoteKey ? voteStatuses[navigationVoteKey] : null;
+      announcePetVote({
+        timeToVoteMs: eventDetails.timeToNextCaptionMs,
+        rated: navigationVoteStatus === "saved" || navigationVoteStatus === "saving",
+      });
 
       void saveCaptionNavigationEvent({
         captionId: navigationTarget.id,
@@ -983,7 +1047,7 @@ export function CaptionVoteFlow({
           console.error("[CaptionVoteFlow] save navigation telemetry failed", err);
         });
     },
-    [createNavigationEventDetails, current]
+    [createNavigationEventDetails, current, voteStatuses]
   );
 
   const handleStartStudy = useCallback(async () => {
@@ -1302,123 +1366,171 @@ export function CaptionVoteFlow({
     [navigateToRelativeCaption]
   );
 
-  const handleHeartVote = useCallback(() => {
-    if (participationPendingRef.current || !current || !currentVoteKey) {
-      return;
-    }
+  // Like and dislike share one slot per caption: choosing one replaces the other,
+  // and choosing the same one again takes it back.
+  const castVote = useCallback(
+    (kind: VoteKind) => {
+      if (participationPendingRef.current || !current || !currentVoteKey) {
+        return;
+      }
 
-    if (currentVoteStatus === "saved") {
+      const voteKey = currentVoteKey;
+      const savedKind: VoteKind = voteKinds[voteKey] ?? "like";
+
+      if (currentVoteStatus === "saved" && savedKind === kind) {
+        const voteTarget = current;
+
+        setPendingCount((count) => count + 1);
+        setError(null);
+        setVoteStatus(voteKey, "removing");
+
+        removeCaptionVote({
+          captionId: voteTarget.id,
+          studyCaptionMappingId: voteTarget.studyCaptionMappingId,
+        })
+          .then((result) => {
+            if (!result?.success) {
+              setVoteStatus(voteKey, "saved");
+              setError(
+                result?.error ?? "We couldn't remove your vote. Please try again."
+              );
+              return;
+            }
+
+            setVoteStatus(voteKey, null);
+            setVoteKind(voteKey, null);
+            forgetLikedTime(voteKey);
+            announcePetReaction("clear");
+            resetVoteTimer();
+          })
+          .catch((err) => {
+            console.error("[CaptionVoteFlow] remove vote failed", err);
+            setVoteStatus(voteKey, "saved");
+            setError("We couldn't remove your vote. Please try again.");
+          })
+          .finally(() => {
+            setPendingCount((count) => Math.max(0, count - 1));
+          });
+
+        return;
+      }
+
+      // Saving or removing something else right now: wait for it to finish.
+      if (currentVoteStatus && currentVoteStatus !== "saved") {
+        return;
+      }
+
+      const switching = currentVoteStatus === "saved";
       const voteTarget = current;
-
       setPendingCount((count) => count + 1);
       setError(null);
-      setVoteStatus(currentVoteKey, "removing");
 
-      removeCaptionVote({
-        captionId: voteTarget.id,
-        studyCaptionMappingId: voteTarget.studyCaptionMappingId,
-      })
+      const eventDetails = createVoteEventDetails("button");
+
+      pauseVoteTimer();
+      setVoteStatus(voteKey, "saving");
+      setVoteKind(voteKey, kind);
+      triggerReactionBurst(voteKey, kind);
+      // The pet reacts at once; it does not wait for the save to come back.
+      announcePetReaction(kind);
+
+      const run = async (): Promise<{ ok: boolean; error?: string; keptPrevious?: boolean }> => {
+        if (switching) {
+          const removed = await removeCaptionVote({
+            captionId: voteTarget.id,
+            studyCaptionMappingId: voteTarget.studyCaptionMappingId,
+          });
+
+          if (!removed?.success) {
+            return {
+              ok: false,
+              keptPrevious: true,
+              error: removed?.error ?? "We couldn't change your vote. Please try again.",
+            };
+          }
+        }
+
+        const result = await saveCaptionVote({
+          captionId: voteTarget.id,
+          clientEventId: eventDetails.clientEventId,
+          inputMethod: eventDetails.inputMethod,
+          sessionId: eventDetails.sessionId,
+          studyCaptionMappingId: voteTarget.studyCaptionMappingId,
+          timeToVoteMs: eventDetails.timeToVoteMs,
+          value: kind === "like" ? HEART_VOTE_VALUE : DISLIKE_VOTE_VALUE,
+        });
+
+        return result?.success
+          ? { ok: true }
+          : { ok: false, error: result?.error ?? "We couldn't save your vote. Please try again." };
+      };
+
+      run()
         .then((result) => {
-          if (!result?.success) {
-            setVoteStatus(currentVoteKey, "saved");
-            setError(
-              result?.error ?? "We couldn't remove your vote. Please try again."
-            );
+          if (!result.ok) {
+            if (result.keptPrevious) {
+              setVoteStatus(voteKey, "saved");
+              setVoteKind(voteKey, savedKind);
+            } else {
+              setVoteStatus(voteKey, null);
+              setVoteKind(voteKey, null);
+              if (switching) forgetLikedTime(voteKey);
+              resumeVoteTimer();
+            }
+            setError(result.error ?? "We couldn't save your vote. Please try again.");
             return;
           }
 
-          setVoteStatus(currentVoteKey, null);
+          setVoteStatus(voteKey, "saved");
           setSessionStudyStats((previousStats) => {
-            const nextLikedCaptionTimeMsByKey = {
-              ...previousStats.likedCaptionTimeMsByKey,
-            };
+            const likedCaptionTimeMsByKey = { ...previousStats.likedCaptionTimeMsByKey };
 
-            delete nextLikedCaptionTimeMsByKey[currentVoteKey];
+            if (kind === "like") {
+              likedCaptionTimeMsByKey[voteKey] = eventDetails.timeToVoteMs;
+            } else {
+              delete likedCaptionTimeMsByKey[voteKey];
+            }
 
             return {
-              likedCaptionTimeMsByKey: nextLikedCaptionTimeMsByKey,
+              likedCaptionTimeMsByKey,
               navigationTimeMsByKey: previousStats.navigationTimeMsByKey,
-              viewedCaptionKeys: previousStats.viewedCaptionKeys,
+              viewedCaptionKeys: {
+                ...previousStats.viewedCaptionKeys,
+                [voteKey]: true,
+              },
             };
           });
-          resetVoteTimer();
         })
         .catch((err) => {
-          console.error("[CaptionVoteFlow] remove vote failed", err);
-          setVoteStatus(currentVoteKey, "saved");
-          setError("We couldn't remove your vote. Please try again.");
+          console.error("[CaptionVoteFlow] save vote failed", err);
+          setVoteStatus(voteKey, null);
+          setVoteKind(voteKey, null);
+          if (switching) forgetLikedTime(voteKey);
+          setError("We couldn't save your vote. Please try again.");
+          resumeVoteTimer();
         })
         .finally(() => {
           setPendingCount((count) => Math.max(0, count - 1));
         });
+    },
+    [
+      createVoteEventDetails,
+      current,
+      currentVoteKey,
+      currentVoteStatus,
+      forgetLikedTime,
+      pauseVoteTimer,
+      resetVoteTimer,
+      resumeVoteTimer,
+      setVoteKind,
+      setVoteStatus,
+      triggerReactionBurst,
+      voteKinds,
+    ]
+  );
 
-      return;
-    }
-
-    if (currentVoteStatus) {
-      return;
-    }
-
-    const voteTarget = current;
-    setPendingCount((count) => count + 1);
-    setError(null);
-
-    const eventDetails = createVoteEventDetails("button");
-
-    pauseVoteTimer();
-    setVoteStatus(currentVoteKey, "saving");
-    triggerHeartBurst(currentVoteKey);
-
-    saveCaptionVote({
-      captionId: voteTarget.id,
-      clientEventId: eventDetails.clientEventId,
-      inputMethod: eventDetails.inputMethod,
-      sessionId: eventDetails.sessionId,
-      studyCaptionMappingId: voteTarget.studyCaptionMappingId,
-      timeToVoteMs: eventDetails.timeToVoteMs,
-      value: HEART_VOTE_VALUE,
-    })
-      .then((result) => {
-        if (!result?.success) {
-          setVoteStatus(currentVoteKey, null);
-          setError(result?.error ?? "We couldn't save your vote. Please try again.");
-          resumeVoteTimer();
-          return;
-        }
-
-        setVoteStatus(currentVoteKey, "saved");
-        setSessionStudyStats((previousStats) => ({
-          likedCaptionTimeMsByKey: {
-            ...previousStats.likedCaptionTimeMsByKey,
-            [currentVoteKey]: eventDetails.timeToVoteMs,
-          },
-          navigationTimeMsByKey: previousStats.navigationTimeMsByKey,
-          viewedCaptionKeys: {
-            ...previousStats.viewedCaptionKeys,
-            [currentVoteKey]: true,
-          },
-        }));
-      })
-      .catch((err) => {
-        console.error("[CaptionVoteFlow] save vote failed", err);
-        setVoteStatus(currentVoteKey, null);
-        setError("We couldn't save your vote. Please try again.");
-        resumeVoteTimer();
-      })
-      .finally(() => {
-        setPendingCount((count) => Math.max(0, count - 1));
-      });
-  }, [
-    createVoteEventDetails,
-    current,
-    currentVoteKey,
-    currentVoteStatus,
-    pauseVoteTimer,
-    resetVoteTimer,
-    resumeVoteTimer,
-    setVoteStatus,
-    triggerHeartBurst,
-  ]);
+  const handleHeartVote = useCallback(() => castVote("like"), [castVote]);
+  const handleDislikeVote = useCallback(() => castVote("dislike"), [castVote]);
 
   const handleCardDoubleTapHeart = useCallback(() => {
     if (
@@ -1606,11 +1718,12 @@ export function CaptionVoteFlow({
                 actionRow={
                   shouldShowInlineCaptionActions ? (
                     <CaptionActionRow
-                      burstToken={
-                        heartBurst.voteKey === currentVoteKey ? heartBurst.token : 0
-                      }
-                      hasCurrentSavedVote={hasCurrentSavedVote}
-                      isHeartPending={isCurrentVoteSaving || isCurrentVoteRemoving}
+                      dislikeBurstToken={dislikeBurstToken}
+                      hasCurrentDislike={hasCurrentDislike}
+                      hasCurrentLike={hasCurrentLike}
+                      isVotePending={isCurrentVoteSaving || isCurrentVoteRemoving}
+                      likeBurstToken={likeBurstToken}
+                      onDislike={handleDislikeVote}
                       onHeart={handleHeartVote}
                     />
                   ) : null
@@ -1627,14 +1740,15 @@ export function CaptionVoteFlow({
           </div>
           {shouldShowVoteBar ? (
             <VoteButtonBar
-              burstToken={
-                heartBurst.voteKey === currentVoteKey ? heartBurst.token : 0
-              }
               captionProgressLabel={captionProgressLabel}
-              showHeartFallback={shouldShowVoteBar}
-              onHeart={handleHeartVote}
-              hasCurrentSavedVote={hasCurrentSavedVote}
+              dislikeBurstToken={dislikeBurstToken}
+              hasCurrentDislike={hasCurrentDislike}
+              hasCurrentLike={hasCurrentLike}
               isPending={isCurrentVoteSaving || isCurrentVoteRemoving}
+              likeBurstToken={likeBurstToken}
+              onDislike={handleDislikeVote}
+              onHeart={handleHeartVote}
+              showHeartFallback={shouldShowVoteBar}
             />
           ) : null}
         </>
@@ -1671,10 +1785,11 @@ function StudyStartPage({ onStart, pending, hasStarted }: {
             </span>
           </h1>
           <p className="text-base leading-8 text-[var(--foreground)]/92 sm:text-lg">
-            Like the captions you find funny.
+            Like the captions you find funny and dislike the ones you don&apos;t.
           </p>
           <p className="text-base leading-8 text-[var(--foreground)]/92 sm:text-lg">
-            That&apos;s it. That&apos;s all you have to do.
+            That&apos;s it. That&apos;s all you have to do. Your pet keeps its HP when you
+            like or dislike a caption, but loses some when you skip past too fast.
           </p>
           <p className="text-base leading-8 text-[var(--foreground)]/92 sm:text-lg">
             Scroll through all the captions, then choose End Study on the
@@ -1737,158 +1852,137 @@ function WheelNavigationOverlay() {
   );
 }
 
-function HeartVoteButton({
+/** One reaction button: a labelled heart (like) or thumbs-down (dislike). */
+function ReactionButton({
+  active,
   burstToken,
-  hasCurrentSavedVote,
   isPending,
-  onHeart,
+  kind,
+  onPress,
   size = "bar",
 }: {
+  active: boolean;
   burstToken: number;
-  hasCurrentSavedVote: boolean;
   isPending: boolean;
-  onHeart: () => void;
+  kind: VoteKind;
+  onPress: () => void;
   size?: "bar" | "inline";
 }) {
-  const HeartIcon = hasCurrentSavedVote ? HeartSolidIcon : HeartOutlineIcon;
-  const shouldBurst = hasCurrentSavedVote && burstToken > 0;
-  const buttonRef = useRef<HTMLButtonElement | null>(null);
-  const [burstOrigin, setBurstOrigin] = useState<{
-    token: number;
-    x: number;
-    y: number;
-  } | null>(null);
+  const isLike = kind === "like";
+  const Icon = isLike
+    ? active ? HeartSolidIcon : HeartOutlineIcon
+    : active ? ThumbDownSolidIcon : ThumbDownOutlineIcon;
+  const shouldBurst = active && burstToken > 0;
   const isInline = size === "inline";
-
-  useLayoutEffect(() => {
-    let frameId: number | null = null;
-
-    if (!shouldBurst) {
-      frameId = window.requestAnimationFrame(() => {
-        setBurstOrigin(null);
-      });
-      return () => {
-        if (frameId !== null) {
-          window.cancelAnimationFrame(frameId);
-        }
-      };
-    }
-
-    const button = buttonRef.current;
-
-    if (!button) {
-      return;
-    }
-
-    const rect = button.getBoundingClientRect();
-    frameId = window.requestAnimationFrame(() => {
-      setBurstOrigin({
-        token: burstToken,
-        x: rect.left + rect.width / 2,
-        y: rect.top + rect.height / 2,
-      });
-    });
-
-    return () => {
-      if (frameId !== null) {
-        window.cancelAnimationFrame(frameId);
-      }
-    };
-  }, [burstToken, shouldBurst]);
+  const name = isLike ? "heart" : "dislike";
 
   return (
-    <>
-      <button
-        ref={buttonRef}
-        type="button"
-        data-heart-vote-control
-        className={`relative isolate flex items-center justify-center transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[var(--accent-strong)] ${
-          isInline ? "h-12 w-12" : "h-14 w-14 sm:h-16 sm:w-16"
-        } ${
-          hasCurrentSavedVote
+    <button
+      type="button"
+      data-heart-vote-control
+      className={`relative isolate flex flex-col items-center justify-center gap-0.5 rounded-2xl transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-[var(--accent-strong)] ${
+        isInline ? "h-14 w-16" : "h-[4.25rem] w-[4.5rem] sm:h-[4.75rem] sm:w-20"
+      } ${
+        active
+          ? isLike
             ? "text-[var(--heart-active)]"
-            : "text-[var(--heart-idle)] hover:-translate-y-[1px] hover:scale-[1.02] hover:text-[var(--heart-hover)]"
-        } ${
-          isPending ? "cursor-wait opacity-80 hover:translate-y-0 hover:scale-100" : ""
+            : "text-indigo-500"
+          : "text-[var(--heart-idle)] hover:-translate-y-[1px] hover:scale-[1.02] hover:text-[var(--heart-hover)]"
+      } ${isPending ? "cursor-wait opacity-80 hover:translate-y-0 hover:scale-100" : ""}`}
+      aria-label={
+        active
+          ? isPending
+            ? `Updating ${name} vote`
+            : `Remove ${name} vote`
+          : isPending
+            ? `Saving ${name} vote`
+            : isLike
+              ? "Like this caption"
+              : "Dislike this caption"
+      }
+      aria-pressed={active}
+      disabled={isPending}
+      onClick={onPress}
+    >
+      <span
+        key={`${kind}-icon-${burstToken}`}
+        className={`relative z-20 ${
+          shouldBurst ? (isLike ? "heart-burst-icon" : "dislike-burst-icon") : ""
         }`}
-        aria-label={
-          hasCurrentSavedVote
-            ? isPending
-              ? "Removing heart vote"
-              : "Remove heart vote"
-            : isPending
-              ? "Saving heart vote"
-              : "Heart this caption"
-        }
-        aria-pressed={hasCurrentSavedVote}
-        disabled={isPending}
-        onClick={onHeart}
       >
-        <span
-          key={`heart-icon-${burstToken}`}
-          className={shouldBurst ? "heart-burst-icon relative z-20" : "relative z-20"}
-        >
-          <HeartIcon
-            className={`${
-              isInline ? "h-7 w-7" : "h-9 w-9 sm:h-10 sm:w-10"
-            } ${
-              isPending ? "animate-pulse" : ""
-            }`}
-            style={
-              hasCurrentSavedVote
-                ? { filter: "drop-shadow(0 12px 22px var(--heart-shadow))" }
-                : undefined
-            }
-          />
-        </span>
-      </button>
-      {shouldBurst && burstOrigin ? (
-        <HeartBurstViewportOverlay
-          burstToken={burstOrigin.token}
-          x={burstOrigin.x}
-          y={burstOrigin.y}
+        <Icon
+          className={`${isInline ? "h-6 w-6" : "h-7 w-7 sm:h-8 sm:w-8"} ${isPending ? "animate-pulse" : ""}`}
         />
-      ) : null}
-    </>
+      </span>
+      <span className="relative z-20 text-[11px] font-semibold leading-none">
+        {isLike ? "Like" : "Dislike"}
+      </span>
+      {shouldBurst ? <SmallReactionBurst key={`${kind}-burst-${burstToken}`} kind={kind} /> : null}
+    </button>
   );
 }
 
+const REACTION_HINT =
+  "Like or dislike each caption. Skipping past quickly without one costs your pet HP.";
+
 function CaptionActionRow({
-  burstToken,
-  hasCurrentSavedVote,
-  isHeartPending,
+  dislikeBurstToken,
+  hasCurrentDislike,
+  hasCurrentLike,
+  isVotePending,
+  likeBurstToken,
+  onDislike,
   onHeart,
 }: {
-  burstToken: number;
-  hasCurrentSavedVote: boolean;
-  isHeartPending: boolean;
+  dislikeBurstToken: number;
+  hasCurrentDislike: boolean;
+  hasCurrentLike: boolean;
+  isVotePending: boolean;
+  likeBurstToken: number;
+  onDislike: () => void;
   onHeart: () => void;
 }) {
   return (
-    <div className="flex w-full items-center justify-start">
-      <HeartVoteButton
-        burstToken={burstToken}
-        hasCurrentSavedVote={hasCurrentSavedVote}
-        isPending={isHeartPending}
-        onHeart={onHeart}
+    <div className="flex w-full items-center justify-start gap-2">
+      <ReactionButton
+        kind="like"
+        active={hasCurrentLike}
+        burstToken={likeBurstToken}
+        isPending={isVotePending}
+        onPress={onHeart}
         size="inline"
       />
+      <ReactionButton
+        kind="dislike"
+        active={hasCurrentDislike}
+        burstToken={dislikeBurstToken}
+        isPending={isVotePending}
+        onPress={onDislike}
+        size="inline"
+      />
+      <p className="min-w-0 flex-1 text-left text-xs leading-snug text-[var(--soft)]">{REACTION_HINT}</p>
     </div>
   );
 }
 
 function VoteButtonBar({
-  burstToken,
   captionProgressLabel,
-  hasCurrentSavedVote,
+  dislikeBurstToken,
+  hasCurrentDislike,
+  hasCurrentLike,
   isPending,
+  likeBurstToken,
+  onDislike,
   onHeart,
   showHeartFallback,
 }: {
-  burstToken: number;
   captionProgressLabel: string | null;
-  hasCurrentSavedVote: boolean;
+  dislikeBurstToken: number;
+  hasCurrentDislike: boolean;
+  hasCurrentLike: boolean;
   isPending: boolean;
+  likeBurstToken: number;
+  onDislike: () => void;
   onHeart: () => void;
   showHeartFallback: boolean;
 }) {
@@ -1904,19 +1998,32 @@ function VoteButtonBar({
         id="vote-button-bar-inner"
         className="mx-auto w-full max-w-xl px-4 sm:max-w-2xl sm:px-6 lg:max-w-3xl lg:px-0"
       >
-        <div className="pointer-events-auto mx-auto flex w-full max-w-[220px] flex-col items-center gap-2 rounded-[28px] border border-[var(--panel-border)] bg-[var(--vote-panel-surface)] px-4 py-3 shadow-[var(--vote-panel-shadow)] backdrop-blur-xl sm:px-5 sm:py-3.5">
+        <div className="pointer-events-auto mx-auto flex w-full max-w-[260px] flex-col items-center gap-2 rounded-[28px] border border-[var(--panel-border)] bg-[var(--vote-panel-surface)] px-4 py-3 shadow-[var(--vote-panel-shadow)] backdrop-blur-xl sm:px-5 sm:py-3.5">
           {captionProgressLabel ? (
             <p className="text-sm font-semibold tabular-nums text-[var(--foreground)]/88">
               {captionProgressLabel}
             </p>
           ) : null}
           {showHeartFallback ? (
-            <HeartVoteButton
-              burstToken={burstToken}
-              hasCurrentSavedVote={hasCurrentSavedVote}
-              isPending={isPending}
-              onHeart={onHeart}
-            />
+            <>
+              <div className="flex items-center gap-3">
+                <ReactionButton
+                  kind="like"
+                  active={hasCurrentLike}
+                  burstToken={likeBurstToken}
+                  isPending={isPending}
+                  onPress={onHeart}
+                />
+                <ReactionButton
+                  kind="dislike"
+                  active={hasCurrentDislike}
+                  burstToken={dislikeBurstToken}
+                  isPending={isPending}
+                  onPress={onDislike}
+                />
+              </div>
+              <p className="text-center text-[11px] leading-snug text-[var(--soft)]">{REACTION_HINT}</p>
+            </>
           ) : null}
         </div>
       </div>
@@ -1947,68 +2054,35 @@ function CaptionProgressIndicator({
   );
 }
 
-function HeartBurstViewportOverlay({
-  burstToken,
-  x,
-  y,
-}: {
-  burstToken: number;
-  x: number;
-  y: number;
-}) {
-  if (typeof document === "undefined") {
-    return null;
+/**
+ * The feedback when a reaction lands: a small ring and a few specks right around
+ * the button, over in about half a second. Deliberately modest; it only has to
+ * confirm the tap, and the pet's reaction does the rest.
+ */
+function SmallReactionBurst({ kind }: { kind: VoteKind }) {
+  if (kind === "dislike") {
+    return (
+      <span aria-hidden className="pointer-events-none absolute inset-0 z-10">
+        <span className="reaction-ring reaction-ring--dislike absolute left-1/2 top-1/2" />
+      </span>
+    );
   }
 
-  return createPortal(
-    <div
-      key={`heart-burst-viewport-${burstToken}`}
-      className="heart-burst-viewport pointer-events-none fixed inset-0 z-[80] overflow-hidden"
-      aria-hidden
-    >
-      <span
-        className="heart-burst-screenwash absolute inset-0"
-        style={
-          {
-            "--heart-burst-origin-x": `${x}px`,
-            "--heart-burst-origin-y": `${y}px`,
-          } as CSSProperties
-        }
-      />
-      <span className="heart-burst-flash absolute" style={{ left: x, top: y }} />
-      <span
-        className="heart-burst-flash heart-burst-flash--secondary absolute"
-        style={{ left: x, top: y }}
-      />
-      <span className="heart-burst-ring absolute" style={{ left: x, top: y }} />
-      <span
-        className="heart-burst-ring heart-burst-ring--outer absolute"
-        style={{ left: x, top: y }}
-      />
-      <span
-        className="heart-burst-shockwave absolute"
-        style={{ left: x, top: y }}
-      />
-      {HEART_BURST_PARTICLES.map((particle, index) => (
+  return (
+    <span aria-hidden className="pointer-events-none absolute inset-0 z-10">
+      <span className="reaction-ring absolute left-1/2 top-1/2" />
+      {HEART_BURST_PARTICLES.slice(0, 6).map((particle, index) => (
         <span
           key={index}
-          className="heart-burst-particle absolute"
+          className="reaction-speck absolute left-1/2 top-1/2"
           style={
             {
-              left: x,
-              top: y,
-              "--heart-burst-x": `${particle.x}px`,
-              "--heart-burst-y": `${particle.y}px`,
-              "--heart-burst-delay": `${particle.delayMs}ms`,
-              "--heart-burst-duration": `${particle.durationMs}ms`,
-              "--heart-burst-size": `${particle.sizePx}px`,
-              "--heart-burst-rotate": `${particle.rotateDeg}deg`,
-              "--heart-burst-stretch": `${particle.stretch}`,
+              "--speck-x": `${Math.round(particle.x * 0.36)}px`,
+              "--speck-y": `${Math.round(particle.y * 0.36)}px`,
             } as CSSProperties
           }
         />
       ))}
-    </div>,
-    document.body
+    </span>
   );
 }

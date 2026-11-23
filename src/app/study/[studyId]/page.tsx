@@ -132,6 +132,7 @@ export default async function NumericStudyPage({
 
   const captionsForVote: CaptionForVote[] = initialCaptions.map((caption) => ({
     id: caption.id,
+    isDisliked: caption.is_disliked,
     isLiked: caption.is_liked,
     isSaved: caption.is_saved,
     content: caption.content,
@@ -145,7 +146,7 @@ export default async function NumericStudyPage({
   return (
     <div
       id="numeric-study-root"
-      className="relative flex h-[100svh] min-h-[100svh] flex-col overflow-hidden px-4 py-3 text-[var(--foreground)] sm:px-6 sm:py-4"
+      className={`relative flex h-[100svh] min-h-[100svh] flex-col overflow-hidden px-4 pb-3 text-[var(--foreground)] sm:px-6 sm:py-4 ${pet ? "pt-[6.5rem]" : "pt-3"}`}
     >
       {studyResult.study.is_private === true ? (
         <PrivateStudyDisclaimer key={`${user.id}:${studyResult.study.id}`} />
